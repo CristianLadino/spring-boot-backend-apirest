@@ -1,17 +1,29 @@
 package com.bolsadeideas.spring.boot.backend.apirest.controllers;
 
+import java.io.File;
+import java.io.IOException;
+import java.net.MalformedURLException;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.Paths;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.UUID;
 import java.util.stream.Collectors;
 
 import javax.validation.Valid;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.core.io.Resource;
+import org.springframework.core.io.UrlResource;
 import org.springframework.dao.DataAccessException;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Pageable;
+import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.validation.BindingResult;
@@ -23,7 +35,9 @@ import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
+import org.springframework.web.multipart.MultipartFile;
 
 import com.bolsadeideas.spring.boot.backend.apirest.models.entity.Client;
 import com.bolsadeideas.spring.boot.backend.apirest.models.services.IClientService;
@@ -35,12 +49,14 @@ public class ClientRestController {
 
 	@Autowired
 	private IClientService clientService;
+	
+	private final Logger log = LoggerFactory.getLogger( ClientRestController.class) ;
 
 	@GetMapping("/clients")
 	public List<Client> index() {
 		return clientService.findAll();
 	}
-	
+
 	@GetMapping("/clients/page/{page}")
 	public Page<Client> index(@PathVariable Integer page) {
 		Pageable pageable = PageRequest.of(page, 3);
@@ -146,6 +162,18 @@ public class ClientRestController {
 		Map<String, Object> response = new HashMap<>();
 
 		try {
+			
+			Client client = clientService.findById(id);
+			String nameOldPhoto = client.getPhoto();
+
+			if (nameOldPhoto != null && nameOldPhoto.length() > 0) {
+				Path rootOldPhoto = Paths.get("uploads").resolve(nameOldPhoto).toAbsolutePath();
+				File fileOldPhoto = rootOldPhoto.toFile();
+
+				if (fileOldPhoto.exists() && fileOldPhoto.canRead()) {
+					fileOldPhoto.delete();
+				}
+			}
 
 			clientService.delete(id);
 
@@ -157,5 +185,72 @@ public class ClientRestController {
 
 		response.put("mensaje", "The client was delete successfully");
 		return new ResponseEntity<Map<String, Object>>(response, HttpStatus.OK);
+	}
+
+	@PostMapping("/clients/upload")
+	public ResponseEntity<?> upload(@RequestParam("file") MultipartFile file, @RequestParam("id") Long id) {
+		Map<String, Object> response = new HashMap<>();
+
+		Client client = clientService.findById(id);
+
+		if (!file.isEmpty()) {
+
+			String fileName = UUID.randomUUID().toString() + "_" + file.getOriginalFilename().replace(" ", "");
+			Path fileRoot = Paths.get("uploads").resolve(fileName).toAbsolutePath();
+			
+			log.info(fileRoot.toString());
+
+			try {
+				Files.copy(file.getInputStream(), fileRoot);
+			} catch (IOException e) {
+				response.put("mensaje", "Error when uploading the photo: " + fileName);
+				response.put("error", e.getMessage().concat(": ").concat(e.getCause().getMessage()));
+				return new ResponseEntity<Map<String, Object>>(response, HttpStatus.INTERNAL_SERVER_ERROR);
+			}
+
+			String nameOldPhoto = client.getPhoto();
+
+			if (nameOldPhoto != null && nameOldPhoto.length() > 0) {
+				Path rootOldPhoto = Paths.get("uploads").resolve(nameOldPhoto).toAbsolutePath();
+				File fileOldPhoto = rootOldPhoto.toFile();
+
+				if (fileOldPhoto.exists() && fileOldPhoto.canRead()) {
+					fileOldPhoto.delete();
+				}
+			}
+
+			client.setPhoto(fileName);
+
+			clientService.save(client);
+
+			response.put("client", client);
+			response.put("message", "The photo was uploaded successfully " + fileName);
+		}
+
+		return new ResponseEntity<Map<String, Object>>(response, HttpStatus.CREATED);
+	}
+	
+	@GetMapping("/uploads/img/{namePhoto:.+}")
+	public ResponseEntity<Resource> viewPhoto(@PathVariable String namePhoto) {
+		
+		Path fileRoot = Paths.get("uploads").resolve(namePhoto).toAbsolutePath();
+		Resource resource = null;
+		
+		log.info(fileRoot.toString());
+		
+		try {
+			resource = new UrlResource(fileRoot.toUri());
+		} catch (MalformedURLException e) {
+			e.printStackTrace();
+		}
+		
+		if(!resource.exists() && !resource.isReadable()) {
+			throw new RuntimeException("Error image could not be loaded " + namePhoto);
+		}
+		
+		HttpHeaders header = new HttpHeaders();
+		header.add(HttpHeaders.CONTENT_DISPOSITION, "attachment; filename=\"" + resource.getFilename() + "\"");
+		
+		return new ResponseEntity<Resource>(resource, header , HttpStatus.OK);
 	}
 }
